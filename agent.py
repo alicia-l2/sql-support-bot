@@ -11,6 +11,7 @@ Built with DeepAgents - the agent autonomously decides which tools to use.
 from dotenv import load_dotenv
 import logging
 import sqlite3
+import unicodedata
 import uuid
 import requests
 from langchain_community.utilities.sql_database import SQLDatabase
@@ -27,6 +28,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("sql-support-bot")
 
 
+def strip_accents(text):
+    """Fold accented/diacritic characters to their base form (e.g. 'ö' -> 'o')."""
+    if text is None:
+        return text
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 # Database setup
 def get_engine_for_chinook_db():
     """Pull sql file, populate in-memory database, and create engine."""
@@ -38,6 +46,7 @@ def get_engine_for_chinook_db():
 
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     connection.executescript(sql_script)
+    connection.create_function("strip_accents", 1, strip_accents)
     return create_engine(
         "sqlite://",
         creator=lambda: connection,
@@ -67,7 +76,7 @@ def get_albums_by_artist(artist: str):
         SELECT Album.Title, Artist.Name
         FROM Album
         JOIN Artist ON Album.ArtistId = Artist.ArtistId
-        WHERE Artist.Name LIKE :artist;
+        WHERE strip_accents(Artist.Name) LIKE strip_accents(:artist);
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_albums_by_artist(artist=%r) -> %r", artist, result)
@@ -82,7 +91,7 @@ def get_tracks_by_artist(artist: str):
         FROM Album
         LEFT JOIN Artist ON Album.ArtistId = Artist.ArtistId
         LEFT JOIN Track ON Track.AlbumId = Album.AlbumId
-        WHERE Artist.Name LIKE :artist;
+        WHERE strip_accents(Artist.Name) LIKE strip_accents(:artist);
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_tracks_by_artist(artist=%r) -> %r", artist, result)
@@ -93,7 +102,7 @@ def get_tracks_by_artist(artist: str):
 def check_for_songs(song_title: str):
     """Check if a song exists by its name."""
     query = """
-        SELECT * FROM Track WHERE Name LIKE :song_title;
+        SELECT * FROM Track WHERE strip_accents(Name) LIKE strip_accents(:song_title);
         """
     result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
@@ -127,7 +136,7 @@ You can help customers in two ways:
 2. **Account management**: Help customers access their account details. You do not have order history or purchase details, and cannot modify any account details.
    - Use get_customer_info to look up customer details (requires customer ID). 
    - Always ask for the customer ID before invoking the tool. If the customer ID is not valid, the tool will return an empty string.
-   - You cannot update, change, or modify any customer account details (address, phone number, email, name, or anything else) — you only have tools to look information up, not to write or change it. If a customer asks you to update anything, clearly say you're not able to make account changes. Do not ask them for the new details (like a new address) as if you were going to use them, and do not say or imply that any update was made or will be made.
+   - You cannot update, change, or modify any customer account details (address, phone number, email, name, or anything else) — you only have tools to look information up. If a customer asks you to update anything, clearly say you're not able to make account changes. Do not ask them for the new details (like a new address) as if you were going to use them, and do not say or imply that any update was made or will be made.
 
 Be polite, helpful, and guide customers to provide any information you need (like customer ID) before calling tools.
 
