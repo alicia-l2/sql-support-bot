@@ -547,6 +547,22 @@ EXAMPLES = [
             ),
         },
     },
+    {
+        "id": "no-track-order-info",
+        "inputs": {"question": "what is the 5th song in metallica's black album"},
+        "outputs": {},
+        "metadata": {
+            "category": "track_order_scope",
+            "note": (
+                "Verified 'Black Album' is a real Metallica album in this catalog, "
+                "but the Track table has no track-number/position column at all "
+                "(schema: TrackId, Name, AlbumId, MediaTypeId, GenreId, Composer, "
+                "Milliseconds, Bytes, UnitPrice) and no tool exposes per-album "
+                "ordering. Agent must say it doesn't have access to track order, "
+                "not name a specific song as being 'the 5th track'."
+            ),
+        },
+    },
 ]
 
 
