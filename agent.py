@@ -9,7 +9,9 @@ Built with DeepAgents - the agent autonomously decides which tools to use.
 """
 
 from dotenv import load_dotenv
+import logging
 import sqlite3
+import uuid
 import requests
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_core.tools import tool
@@ -21,12 +23,17 @@ from deepagents import create_deep_agent
 # Load environment variables
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("sql-support-bot")
+
 
 # Database setup
 def get_engine_for_chinook_db():
     """Pull sql file, populate in-memory database, and create engine."""
     url = "https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sql"
     response = requests.get(url)
+    logger.info("Fetched Chinook SQL script: status=%s bytes=%d", response.status_code, len(response.content))
+    response.raise_for_status()
     sql_script = response.text
 
     connection = sqlite3.connect(":memory:", check_same_thread=False)
@@ -42,56 +49,68 @@ def get_engine_for_chinook_db():
 engine = get_engine_for_chinook_db()
 db = SQLDatabase(engine)
 
+logger.info("Tables loaded: %s", db.get_usable_table_names())
+logger.info(
+    "Row counts: Artist=%s Album=%s Track=%s Customer=%s",
+    db.run("SELECT COUNT(*) FROM Artist;"),
+    db.run("SELECT COUNT(*) FROM Album;"),
+    db.run("SELECT COUNT(*) FROM Track;"),
+    db.run("SELECT COUNT(*) FROM Customer;"),
+)
+
 
 # Music-related tools
 @tool
 def get_albums_by_artist(artist: str):
     """Get albums by an artist."""
-    return db.run(
-        f"""
+    query = """
         SELECT Album.Title, Artist.Name
         FROM Album
         JOIN Artist ON Album.ArtistId = Artist.ArtistId
-        WHERE Artist.Name LIKE '%{artist}%';
-        """,
-        include_columns=True
-    )
+        WHERE Artist.Name LIKE :artist;
+        """
+    result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    logger.info("get_albums_by_artist(artist=%r) -> %r", artist, result)
+    return result
 
 
 @tool
 def get_tracks_by_artist(artist: str):
     """Get songs by an artist (or similar artists)."""
-    return db.run(
-        f"""
+    query = """
         SELECT Track.Name as SongName, Artist.Name as ArtistName
         FROM Album
         LEFT JOIN Artist ON Album.ArtistId = Artist.ArtistId
         LEFT JOIN Track ON Track.AlbumId = Album.AlbumId
-        WHERE Artist.Name LIKE '%{artist}%';
-        """,
-        include_columns=True
-    )
+        WHERE Artist.Name LIKE :artist;
+        """
+    result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    logger.info("get_tracks_by_artist(artist=%r) -> %r", artist, result)
+    return result
 
 
 @tool
 def check_for_songs(song_title: str):
     """Check if a song exists by its name."""
-    return db.run(
-        f"""
-        SELECT * FROM Track WHERE Name LIKE '%{song_title}%';
-        """,
-        include_columns=True
-    )
+    query = """
+        SELECT * FROM Track WHERE Name LIKE :song_title;
+        """
+    result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
+    logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
+    return result
 
 
 # Customer-related tools
 @tool
 def get_customer_info(customer_id: int):
     """Look up customer info given their ID. ALWAYS make sure you have the customer ID before invoking this."""
-    return db.run(f"SELECT * FROM Customer WHERE CustomerID = {customer_id};")
+    query = "SELECT * FROM Customer WHERE CustomerID = :customer_id;"
+    result = db.run(query, parameters={"customer_id": customer_id})
+    logger.info("get_customer_info(customer_id=%r) -> %r", customer_id, result)
+    return result
 
 
-def create_agent():
+def create_agent(model=None):
     """
     Create a DeepAgent with all tools.
     The agent autonomously decides which tools to use based on the user's query.
@@ -113,7 +132,7 @@ You can help customers in two main ways:
 Be polite, helpful, and guide customers to provide any information you need (like customer ID) before calling tools."""
 
     agent = create_deep_agent(
-        model=ChatOpenAI(model="gpt-4o", temperature=0),
+        model=model or ChatOpenAI(model="gpt-4o", temperature=0),
         tools=[
             get_albums_by_artist,
             get_tracks_by_artist,
@@ -137,6 +156,7 @@ if __name__ == "__main__":
 
     # Interactive loop
     conversation_history = []
+    session_id = str(uuid.uuid4())
 
     while True:
         user_input = input("You: ")
@@ -147,7 +167,14 @@ if __name__ == "__main__":
         conversation_history.append({"role": "user", "content": user_input})
 
         # Invoke the agent
-        result = agent.invoke({"messages": conversation_history})
+        result = agent.invoke(
+            {"messages": conversation_history},
+            config={
+                "run_name": "sql-support-bot-turn",
+                "tags": ["sql-support-bot"],
+                "metadata": {"session_id": session_id},
+            },
+        )
 
         # Extract the latest AI response
         if result and "messages" in result:
