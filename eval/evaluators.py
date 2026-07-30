@@ -64,9 +64,29 @@ def _tool_calls(run: Run) -> list[dict]:
     return calls
 
 
-def _tool_result_is_empty(call: dict) -> bool:
-    output = call.get("outputs")
-    text = str(output).strip().lower()
+def _tool_result_is_blank(call: dict) -> bool:
+    """True if the tool's actual return content is blank.
+
+    A tool run's `outputs` is a wrapper around the real db.run() result, and
+    that wrapper's shape differs depending on when you look at it:
+    - live, during evaluate() (evaluator called with the in-memory run), the
+      wrapper's "output" is an actual ToolMessage object: outputs["output"].content
+    - fetched after the fact via client.list_runs() (post-serialization),
+      "output" is a plain dict: outputs["output"]["content"]
+    Checking the wrapper's own str() (as this used to) never matches "" in
+    either case, so a genuinely blank result (db.run() returning "") was
+    never detected as blank and the hallucination check below silently
+    no-opped.
+    """
+    outputs = call.get("outputs") or {}
+    message = outputs.get("output") if isinstance(outputs, dict) else outputs
+    if isinstance(message, dict):
+        content = message.get("content")
+    elif hasattr(message, "content"):
+        content = message.content
+    else:
+        content = message
+    text = str(content if content is not None else "").strip().lower()
     return text in ("", "[]", "none")
 
 
@@ -86,14 +106,15 @@ def _conversation_turns(example: Example) -> list[str]:
 
 
 def no_hallucination_on_empty_result(run: Run, example: Example) -> dict:
-    """groundedness: if a tool returned nothing, the response must not claim a match."""
+    """groundedness: if a tool's return content was blank, the response must not
+    claim a match."""
     calls = _tool_calls(run)
-    empty_calls = [c for c in calls if _tool_result_is_empty(c)]
-    if not empty_calls:
+    blank_calls = [c for c in calls if _tool_result_is_blank(c)]
+    if not blank_calls:
         return {
             "key": "no_hallucination_on_empty_result",
             "score": 1,
-            "comment": "no empty tool results in trace, nothing to hallucinate from",
+            "comment": "no blank tool results in trace, nothing to hallucinate from",
         }
 
     judged = _llm_judge(
@@ -236,8 +257,8 @@ def recognizes_title_variant(run: Run, example: Example) -> dict:
     treated as final — the agent should try a reasonable variant before concluding
     something doesn't exist."""
     calls = _tool_calls(run)
-    all_empty = bool(calls) and all(_tool_result_is_empty(c) for c in calls)
-    if not all_empty:
+    all_blank = bool(calls) and all(_tool_result_is_blank(c) for c in calls)
+    if not all_blank:
         return {
             "key": "recognizes_title_variant",
             "score": 1,
