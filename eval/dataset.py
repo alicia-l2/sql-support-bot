@@ -563,6 +563,20 @@ EXAMPLES = [
             ),
         },
     },
+    {
+        "id": "reports-song-duration-correctly",
+        "inputs": {"question": "how long is the song arc by pearl jam"},
+        "outputs": {},
+        "metadata": {
+            "category": "duration_conversion",
+            "note": (
+                "Verified real track: 'Arc' by Pearl Jam, Milliseconds=65593 in the "
+                "DB (= 1:05). Regression test for milliseconds->minutes:seconds "
+                "conversion, now done in SQL (check_for_songs / get_tracks_by_artist "
+                "both compute Duration directly) rather than left to the model."
+            ),
+        },
+    },
 ]
 
 

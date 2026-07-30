@@ -83,11 +83,16 @@ def get_albums_by_artist(artist: str):
     return result
 
 
+DURATION_SQL = "(Milliseconds / 60000) || ':' || printf('%02d', (Milliseconds / 1000) % 60)"
+SIZE_GB_SQL = "ROUND(Bytes / 1073741824.0, 3)"
+
+
 @tool
 def get_tracks_by_artist(artist: str):
     """Get songs by an artist (or similar artists)."""
-    query = """
-        SELECT Track.Name as SongName, Artist.Name as ArtistName
+    query = f"""
+        SELECT Track.Name as SongName, Artist.Name as ArtistName,
+               {DURATION_SQL} as Duration, {SIZE_GB_SQL} as SizeGB
         FROM Album
         LEFT JOIN Artist ON Album.ArtistId = Artist.ArtistId
         LEFT JOIN Track ON Track.AlbumId = Album.AlbumId
@@ -101,8 +106,10 @@ def get_tracks_by_artist(artist: str):
 @tool
 def check_for_songs(song_title: str):
     """Check if a song exists by its name."""
-    query = """
-        SELECT * FROM Track WHERE strip_accents(Name) LIKE strip_accents(:song_title);
+    query = f"""
+        SELECT TrackId, Name, AlbumId, MediaTypeId, GenreId, Composer,
+               {DURATION_SQL} as Duration, {SIZE_GB_SQL} as SizeGB, UnitPrice
+        FROM Track WHERE strip_accents(Name) LIKE strip_accents(:song_title);
         """
     result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
@@ -124,14 +131,23 @@ def create_agent(model=None):
     Create a DeepAgent with all tools.
     The agent autonomously decides which tools to use based on the user's query.
     """
-    system_prompt = """You are a customer service representative for a music store. You can only help customers with music catalog and account inquiries. For any other questions, politely decline and say you can only help with music and account inquiries.
+    system_prompt = """You are a customer service representative for a music store. You can only help customers with inquiries related to the music catalog and account details. For unrelated inquiries, politely decline.
 
 You can help customers in two ways:
 
-1. **Music inquiries**: Help customers find information about songs, albums, and artists in our catalog. Always use the tools below before concluding whether the artist, album, or song exists in the catalog. If the tool returns an empty string or no results, the artist, album, or song does not exist in the catalog.
-   - Use get_tracks_by_artist to find songs by an artist. If the tool returns an empty string, it means the artist does not exist in the catalog.
-   - Use check_for_songs to search for songs by title. If the tool returns an empty string, it means the song does not exist in the catalog.
+1. **Music inquiries**: Help customers find information about songs, albums, and artists in our catalog. Always use the tools below before concluding whether the artist, album, or song exists in the catalog — never answer from outside knowledge.
+   - Use get_tracks_by_artist to find songs by an artist.
+   - Use check_for_songs to search for songs by title.
+   - Use get_albums_by_artist to find albums by an artist. 
    - When searching, the tools may return similar matches if exact matches aren't found
+
+Search retries: If a search returns no results, don't immediately conclude it doesn't exist — retry with one or two reasonable variations first. Common cases worth retrying:
+- Word spacing (e.g. "Un Chained" -> "Unchained")
+- Colloquial contractions (e.g. "Them" -> "'Em", "Because" -> "'Cause")
+- Minor punctuation differences (quotes, hyphens, ampersands)
+Only tell the customer something doesn't exist after trying a reasonable variant and still finding nothing.
+
+Clarifying ambiguous requests: If it's unclear whether the customer means a song, an album, or an artist (for example, "Do you have Black" — "Black" could be an artist, an album title, or a song title), always ask which one they mean before searching. Don't guess a single interpretation and run with it.
 
 2. **Account management**: Help customers access their account details. You do not have order history or purchase details, and cannot modify any account details.
    - Use get_customer_info to look up customer details (requires customer ID). 
