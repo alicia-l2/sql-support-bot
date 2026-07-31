@@ -11,4 +11,5 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-openai>=1.2.1",
     "deepagents>=0.1.0",
+    "langsmith>=0.7.31",
 ]

@@ -15,7 +15,9 @@ import uuid
 import requests
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_core.tools import tool
+from langchain_core.tracers.context import collect_runs
 from langchain_openai import ChatOpenAI
+from langsmith import Client
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from deepagents import create_deep_agent
@@ -157,12 +159,24 @@ if __name__ == "__main__":
     print("Initializing agent...\n")
 
     agent = create_agent()
+    langsmith_client = Client()
 
     print("Agent ready! Type 'quit' to exit.\n")
 
     # Interactive loop
     conversation_history = []
     session_id = str(uuid.uuid4())
+    customer_id = input("Customer ID (press enter to stay anonymous): ").strip()
+
+    # thread_id / user_id / environment are the reserved keys LangSmith indexes for
+    # the Threads view and for per-user / per-environment filtering.
+    run_metadata = {
+        "session_id": session_id,
+        "thread_id": session_id,
+        "environment": "production",
+    }
+    if customer_id:
+        run_metadata["user_id"] = customer_id
 
     while True:
         user_input = input("You: ")
@@ -173,14 +187,15 @@ if __name__ == "__main__":
         conversation_history.append({"role": "user", "content": user_input})
 
         # Invoke the agent
-        result = agent.invoke(
-            {"messages": conversation_history},
-            config={
-                "run_name": "sql-support-bot-turn",
-                "tags": ["sql-support-bot"],
-                "metadata": {"session_id": session_id},
-            },
-        )
+        with collect_runs() as collected_runs:
+            result = agent.invoke(
+                {"messages": conversation_history},
+                config={
+                    "run_name": "sql-support-bot-turn",
+                    "tags": ["sql-support-bot"],
+                    "metadata": run_metadata,
+                },
+            )
 
         # Extract the latest AI response
         if result and "messages" in result:
@@ -191,3 +206,12 @@ if __name__ == "__main__":
 
             # Add to conversation history
             conversation_history.append({"role": "assistant", "content": ai_content})
+
+        # Collect a quality signal for this turn against the root run
+        rating = input("Rate this answer 1-5 (press enter to skip): ").strip()
+        if rating.isdigit() and collected_runs.traced_runs:
+            langsmith_client.create_feedback(
+                run_id=collected_runs.traced_runs[0].id,
+                key="user_rating",
+                score=int(rating) / 5,
+            )

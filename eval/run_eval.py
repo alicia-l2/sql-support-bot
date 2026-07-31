@@ -17,7 +17,9 @@ from eval.rate_limit import shared_rate_limiter
 load_dotenv()
 
 _agent_model = ChatOpenAI(model="gpt-4o", temperature=0, rate_limiter=shared_rate_limiter, max_retries=6)
-_agent = create_agent(model=_agent_model)
+_agent = create_agent(model=_agent_model).with_config(
+    {"run_name": "sql-support-bot-eval", "metadata": {"environment": "eval"}}
+)
 
 
 def target(inputs: dict) -> dict:
