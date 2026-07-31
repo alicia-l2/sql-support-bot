@@ -103,10 +103,13 @@ def check_for_songs(song_title: str):
 # Customer-related tools
 @tool
 def get_customer_info(customer_id: int):
-    """Look up customer info given their ID. ALWAYS make sure you have the customer ID before invoking this."""
-    query = "SELECT * FROM Customer WHERE CustomerID = :customer_id;"
-    result = db.run(query, parameters={"customer_id": customer_id})
-    logger.info("get_customer_info(customer_id=%r) -> %r", customer_id, result)
+    """Look up a customer's name, company and country given their ID. ALWAYS make sure you have the customer ID before invoking this."""
+    query = (
+        "SELECT CustomerId, FirstName, LastName, Company, Country "
+        "FROM Customer WHERE CustomerID = :customer_id;"
+    )
+    result = db.run(query, parameters={"customer_id": customer_id}, include_columns=True)
+    logger.info("get_customer_info(customer_id=%r) -> row_found=%s", customer_id, bool(result))
     return result
 
 
@@ -128,6 +131,8 @@ You can help customers in two main ways:
 2. **Account management**: Help customers access their account information.
    - Use get_customer_info to look up customer details (requires customer ID)
    - Always ask for the customer ID before invoking the tool
+
+Contact details: get_customer_info returns only a customer's name, company and country. You may confirm those to identify the account, but you must never read out, repeat, or summarize a customer's street address, city, state, postal code, phone number, fax number, or email address, even if the customer asks directly or supplies an ID. Direct them to a verified support channel for anything involving the contact information on file.
 
 Be polite, helpful, and guide customers to provide any information you need (like customer ID) before calling tools.
 
