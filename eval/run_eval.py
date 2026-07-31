@@ -6,10 +6,9 @@ Usage:
 """
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from langsmith.evaluation import evaluate
 
-from agent import create_agent
+from agent import build_model, create_agent, message_text
 from eval.dataset import DATASET_NAME
 from eval.evaluators import dispatch
 from eval.rate_limit import shared_rate_limiter
@@ -21,9 +20,10 @@ load_dotenv()
 # far more meaningful than any single run's verdict.
 NUM_REPETITIONS = 3
 
-_agent_model = ChatOpenAI(
-    model="gpt-4o", temperature=0, rate_limiter=shared_rate_limiter, max_retries=6, timeout=60
-)
+# Must track agent.py's model, or the evals grade something the app doesn't run.
+# (The judge in evaluators.py deliberately stays on gpt-4o — a stable grader makes
+# scores comparable across agent-model changes.)
+_agent_model = build_model(rate_limiter=shared_rate_limiter, max_retries=6, timeout=60)
 _agent = create_agent(model=_agent_model)
 
 
@@ -36,7 +36,7 @@ def target(inputs: dict) -> dict:
         conversation_history.append({"role": "user", "content": turn})
         result = _agent.invoke({"messages": conversation_history})
         ai_message = result["messages"][-1]
-        ai_content = ai_message.content if hasattr(ai_message, "content") else str(ai_message)
+        ai_content = message_text(ai_message)
         conversation_history.append({"role": "assistant", "content": ai_content})
     return {"answer": ai_content}
 

@@ -96,7 +96,14 @@ def _tool_result_is_blank(call: dict) -> bool:
 
 def _final_response_text(run: Run) -> str:
     outputs = run.outputs or {}
-    return str(outputs.get("answer", outputs))
+    answer = outputs.get("answer", outputs)
+    # target() normalizes to a string, but guard the Responses-API block-list
+    # shape anyway: judging a stringified list of dicts would fail silently.
+    if isinstance(answer, list):
+        return "\n".join(
+            b["text"] if isinstance(b, dict) and isinstance(b.get("text"), str) else str(b) for b in answer
+        )
+    return str(answer)
 
 
 def _conversation_turns(example: Example) -> list[str]:
@@ -287,9 +294,20 @@ def states_limitation_before_soliciting_details(run: Run, example: Example) -> d
         context=f"Conversation: {_conversation_turns(example)}",
         response=_final_response_text(run),
         criterion=(
-            "The requested action is outside this agent's capabilities — this agent can look up albums and tracks using the artist name, look up songs by song name, and look up customer info by ID. The response should clearly state the "
-            "limitation. It should NOT ask the user for further details "
-            "(new address, alternate lookup info, etc.) that it has no ability to act on."
+            "The requested action is outside this agent's capabilities. The agent "
+            "CAN: look up albums and tracks by artist name, look up songs by song "
+            "title, and look up customer info by customer ID. It CANNOT do anything "
+            "else — it has no way to write or change data, and no lookup by ID other "
+            "than customer ID.\n"
+            "The response must clearly state the limitation. It must NOT ask the "
+            "user for information it has no way to act on (e.g. a new address, when "
+            "it cannot update anything).\n"
+            "IMPORTANT: offering a genuine alternative that IS within the "
+            "capabilities listed above is correct and helpful, not a failure. For "
+            "example, after declining an artist-ID lookup, saying 'if you give me "
+            "the artist's name I can search for that' should PASS — artist name "
+            "lookup is a real capability. Only penalize requests for details that "
+            "lead nowhere."
         ),
     )
     return {
@@ -609,31 +627,38 @@ def uses_latest_message_not_context(run: Run, example: Example) -> dict:
             "comment": "no lookup tool was called for the latest turn",
         }
 
-    last_call = calls[-1]
-    arg_value = _lookup_arg_value(last_call)
-    arg_words = _words(arg_value)
-    if not arg_words:
-        return {
-            "key": "uses_latest_message_not_context",
-            "score": 0,
-            "comment": f"tool call {last_call['name']} had no recognizable artist/song_title argument",
-        }
+    # Pass if ANY lookup call was grounded in the latest message. Checking only
+    # the final call punished correct behavior: an agent that searched the term
+    # the user actually typed and THEN tried spelling variants (per the search
+    # -retry rule) would be failed for its last retry, even though it never
+    # relied on stale context.
+    searched = []
+    for call in calls:
+        arg_value = _lookup_arg_value(call)
+        arg_words = _words(arg_value)
+        if not arg_words:
+            continue
+        searched.append(arg_value)
+        if not (arg_words - latest_words):
+            return {
+                "key": "uses_latest_message_not_context",
+                "score": 1,
+                "comment": f"searched {arg_value!r}, grounded in the latest message (all calls: {searched})",
+            }
 
-    bled_in = arg_words - latest_words
-    if bled_in:
+    if not searched:
         return {
             "key": "uses_latest_message_not_context",
             "score": 0,
-            "comment": (
-                f"tool called with {arg_value!r}, but the latest message was "
-                f"{turns[-1]!r} — {sorted(bled_in)} came from earlier context, "
-                "not the current message"
-            ),
+            "comment": "no lookup call had a recognizable artist/song_title argument",
         }
     return {
         "key": "uses_latest_message_not_context",
-        "score": 1,
-        "comment": f"tool call {arg_value!r} is grounded in the latest message",
+        "score": 0,
+        "comment": (
+            f"latest message was {turns[-1]!r}, but no lookup used only its words — "
+            f"every call pulled in earlier context: {searched}"
+        ),
     }
 
 
