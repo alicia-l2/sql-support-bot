@@ -16,7 +16,14 @@ from eval.rate_limit import shared_rate_limiter
 
 load_dotenv()
 
-_agent_model = ChatOpenAI(model="gpt-4o", temperature=0, rate_limiter=shared_rate_limiter, max_retries=6)
+# Each example is run this many times. Scores here are noisy — the same input
+# can pass one run and fail the next — so a pass *rate* across repetitions is
+# far more meaningful than any single run's verdict.
+NUM_REPETITIONS = 3
+
+_agent_model = ChatOpenAI(
+    model="gpt-4o", temperature=0, rate_limiter=shared_rate_limiter, max_retries=6, timeout=60
+)
 _agent = create_agent(model=_agent_model)
 
 
@@ -41,5 +48,6 @@ if __name__ == "__main__":
         evaluators=[dispatch],
         experiment_prefix="sql-support-bot",
         max_concurrency=1,
+        num_repetitions=NUM_REPETITIONS,
     )
     print(results)

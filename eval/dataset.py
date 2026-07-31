@@ -297,28 +297,45 @@ EXAMPLES = [
     },
     {
         "id": "partial-name-lookup-joao",
-        "inputs": {"question": "What songs does João have?"},
+        "inputs": {
+            "conversation": [
+                "What songs does João have?",
+                "João Gilberto",
+            ]
+        },
         "outputs": {},
         "metadata": {
-            "category": "partial_name_lookup",
+            "category": "clarify_then_lookup",
             "note": (
-                "'João' substring-matches two real artists (João Gilberto, João "
-                "Suplicy). Agent must actually call get_tracks_by_artist rather than "
-                "assuming a partial first name won't match anything."
+                "'João' substring-matches two real, distinct artists (João "
+                "Gilberto, João Suplicy) — genuinely ambiguous, unlike Antônio "
+                "(only one match). Agent should ask which one before searching; "
+                "once the customer clarifies, it must actually call "
+                "get_tracks_by_artist for that artist and report real results."
             ),
         },
     },
     {
         "id": "partial-name-lookup-aaron",
-        "inputs": {"question": "What songs does Aaron have?"},
+        "inputs": {
+            "conversation": [
+                "What songs does Aaron have?",
+                "Aaron Copland",
+            ]
+        },
         "outputs": {},
         "metadata": {
-            "category": "partial_name_lookup",
+            "category": "clarify_then_lookup",
             "note": (
-                "'Aaron' substring-matches two real artists (Aaron Goldberg, Aaron "
-                "Copland & London Symphony Orchestra). Agent must actually call "
-                "get_tracks_by_artist rather than assuming a partial first name "
-                "won't match anything."
+                "'Aaron' substring-matches two real, distinct artists (Aaron "
+                "Goldberg, Aaron Copland & London Symphony Orchestra) — genuinely "
+                "ambiguous. Agent should ask which one before searching; once the "
+                "customer clarifies, it must actually call get_tracks_by_artist "
+                "for that artist and report real results. (Previously mechanically "
+                "required an immediate tool call on turn 1, which now contradicts "
+                "the system prompt's own 'ask before guessing on ambiguous "
+                "requests' instruction — restructured as a multi-turn flow check "
+                "instead.)"
             ),
         },
     },
@@ -405,7 +422,7 @@ EXAMPLES = [
     },
     {
         "id": "spacing-mismatch-song-title",
-        "inputs": {"question": "do you have un chained"},
+        "inputs": {"conversation": ["do you have un chained", "it's a song"]},
         "outputs": {},
         "metadata": {
             "category": "normalization",
@@ -414,13 +431,17 @@ EXAMPLES = [
                 "and 'Unchained Melody' as tracks (no internal space), but "
                 "check_for_songs('Un Chained') — with a space — returns empty and "
                 "the agent flatly said the song doesn't exist. Word-boundary/spacing "
-                "differences shouldn't be treated as proof of absence."
+                "differences shouldn't be treated as proof of absence. Restructured "
+                "as multi-turn: the bare phrasing now legitimately triggers the "
+                "entity-type clarification rule first (song/album/artist?) — once "
+                "the customer confirms it's a song, the retry logic should kick in "
+                "and find the real spacing variant."
             ),
         },
     },
     {
         "id": "colloquial-contraction-song-title",
-        "inputs": {"question": "do you have hang them high"},
+        "inputs": {"conversation": ["do you have hang them high", "it's a song"]},
         "outputs": {},
         "metadata": {
             "category": "normalization",
@@ -428,9 +449,9 @@ EXAMPLES = [
                 "Real observed failure: check_for_songs('Hang Them High') returns "
                 "empty and the agent said it doesn't exist — but the catalog has "
                 "\"Hang 'Em High\" (TrackId 3053). Only after the customer "
-                "self-corrected to 'hang em high' did the agent find it. The agent "
-                "should try the colloquial contraction itself rather than requiring "
-                "the customer to guess the exact stored spelling."
+                "self-corrected to 'hang em high' did the agent find it. Restructured "
+                "as multi-turn for the same reason as spacing-mismatch-song-title — "
+                "the bare phrasing now triggers entity-type clarification first."
             ),
         },
     },
@@ -574,6 +595,45 @@ EXAMPLES = [
                 "DB (= 1:05). Regression test for milliseconds->minutes:seconds "
                 "conversion, now done in SQL (check_for_songs / get_tracks_by_artist "
                 "both compute Duration directly) rather than left to the model."
+            ),
+        },
+    },
+    {
+        "id": "retry-cap-love-story",
+        "inputs": {"question": "do you have the song love story"},
+        "outputs": {},
+        "metadata": {
+            "category": "retry_bound",
+            "note": (
+                "Real observed conversation: agent tried 'Love Story', "
+                "'LoveStory', 'Love-Story' (3 calls = 1 initial + 2 retries, "
+                "exactly the cap) before correctly reporting not found. Verified "
+                "genuinely absent from the catalog (0 matches for either spacing "
+                "variant). This is the retry logic working correctly — the eval "
+                "guards against a future regression where retries loop past the cap."
+            ),
+        },
+    },
+    {
+        "id": "multi-topic-love-story-customer-praiera",
+        "inputs": {
+            "conversation": [
+                "does the song love story exist",
+                "can I get the email for customer 50",
+                "how much is the song praiera",
+            ]
+        },
+        "outputs": {},
+        "metadata": {
+            "category": "topic_switching",
+            "note": (
+                "Three unrelated requests in a row: song existence (Love Story — "
+                "verified absent), customer lookup (customer 50 = Enrique Muñoz, "
+                "enrique_munoz@yahoo.es), and a different song's price (Praiera by "
+                "Chico Science & Nação Zumbi = $0.99, verified). Tests that the "
+                "agent handles topic switches cleanly — actually looks each one "
+                "up, doesn't skip any, and doesn't let context from one topic "
+                "contaminate the answer to a completely unrelated one."
             ),
         },
     },

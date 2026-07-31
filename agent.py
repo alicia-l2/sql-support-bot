@@ -11,6 +11,7 @@ Built with DeepAgents - the agent autonomously decides which tools to use.
 from dotenv import load_dotenv
 import logging
 import sqlite3
+import threading
 import unicodedata
 import uuid
 import requests
@@ -58,13 +59,34 @@ def get_engine_for_chinook_db():
 engine = get_engine_for_chinook_db()
 db = SQLDatabase(engine)
 
+# The whole app shares ONE sqlite3 connection (StaticPool + check_same_thread=False),
+# but the agent's tool node runs tool calls in parallel threads. Two threads touching
+# that single connection concurrently is unsafe in two distinct ways:
+#   1. It raised "sqlite3.InterfaceError: bad parameter or other API misuse" whenever
+#      the agent looked up several artists at once.
+#   2. Worse, because strip_accents() is a Python callback registered via
+#      create_function(), a query holding SQLite's connection mutex must re-enter
+#      Python (and take the GIL) mid-query. A second thread holding the GIL while
+#      waiting on that mutex deadlocks the process outright — no Python bytecode can
+#      run at all, so it freezes silently rather than erroring.
+# Serializing every query behind this lock removes both. It costs nothing here:
+# these queries are millisecond-scale and the agent is LLM-bound, not DB-bound.
+_db_lock = threading.Lock()
+
+
+def run_query(query, **kwargs):
+    """Run a query against the shared connection, serialized across threads."""
+    with _db_lock:
+        return db.run(query, **kwargs)
+
+
 logger.info("Tables loaded: %s", db.get_usable_table_names())
 logger.info(
     "Row counts: Artist=%s Album=%s Track=%s Customer=%s",
-    db.run("SELECT COUNT(*) FROM Artist;"),
-    db.run("SELECT COUNT(*) FROM Album;"),
-    db.run("SELECT COUNT(*) FROM Track;"),
-    db.run("SELECT COUNT(*) FROM Customer;"),
+    run_query("SELECT COUNT(*) FROM Artist;"),
+    run_query("SELECT COUNT(*) FROM Album;"),
+    run_query("SELECT COUNT(*) FROM Track;"),
+    run_query("SELECT COUNT(*) FROM Customer;"),
 )
 
 
@@ -78,7 +100,7 @@ def get_albums_by_artist(artist: str):
         JOIN Artist ON Album.ArtistId = Artist.ArtistId
         WHERE strip_accents(Artist.Name) LIKE strip_accents(:artist);
         """
-    result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    result = run_query(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_albums_by_artist(artist=%r) -> %r", artist, result)
     return result
 
@@ -98,7 +120,7 @@ def get_tracks_by_artist(artist: str):
         LEFT JOIN Track ON Track.AlbumId = Album.AlbumId
         WHERE strip_accents(Artist.Name) LIKE strip_accents(:artist);
         """
-    result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    result = run_query(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_tracks_by_artist(artist=%r) -> %r", artist, result)
     return result
 
@@ -111,7 +133,7 @@ def check_for_songs(song_title: str):
                {DURATION_SQL} as Duration, {SIZE_GB_SQL} as SizeGB, UnitPrice
         FROM Track WHERE strip_accents(Name) LIKE strip_accents(:song_title);
         """
-    result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
+    result = run_query(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
     return result
 
@@ -121,7 +143,7 @@ def check_for_songs(song_title: str):
 def get_customer_info(customer_id: int):
     """Look up customer info given their ID. ALWAYS make sure you have the customer ID before invoking this."""
     query = "SELECT * FROM Customer WHERE CustomerID = :customer_id;"
-    result = db.run(query, parameters={"customer_id": customer_id})
+    result = run_query(query, parameters={"customer_id": customer_id})
     logger.info("get_customer_info(customer_id=%r) -> %r", customer_id, result)
     return result
 
@@ -135,19 +157,19 @@ def create_agent(model=None):
 
 You can help customers in two ways:
 
-1. **Music inquiries**: Help customers find information about songs, albums, and artists in our catalog. Always use the tools below before concluding whether the artist, album, or song exists in the catalog — never answer from outside knowledge.
-   - Use get_tracks_by_artist to find songs by an artist.
-   - Use check_for_songs to search for songs by title.
-   - Use get_albums_by_artist to find albums by an artist. 
+1. **Music inquiries**: Help customers find information about songs, albums, and artists in our catalog. Always use the tools below before concluding whether the artist, album, or song exists in the catalog. Never answer from outside knowledge. We do not have tools to find albums by an album title, nor are we able to find and list songs within an album.
+   - Use get_tracks_by_artist to find songs by an artist. This tool returns song titles, artist names, song durations, and size. 
+   - Use check_for_songs to search for songs by title. This tool returns the track id, the song title, album ID, MediaTypeId, GenreId, Composer, Duration, size, and unit price. 
+   - Use get_albums_by_artist to find albums by an artist. This tool returns album titles and artist names. It cannot find albums by an album title, nor can it find track-number or ordering data for any album.
    - When searching, the tools may return similar matches if exact matches aren't found
 
-Search retries: If a search returns no results, don't immediately conclude it doesn't exist — retry with one or two reasonable variations first. Common cases worth retrying:
+Search retries: If a search returns no results, call the same tool again (up to 2 retries) with a reasonable spelling/spacing variation before concluding it doesn't exist. Every retry must be an actual new tool call with the changed argument — never assume or guess what a retry would return without calling the tool. Common cases worth retrying:
 - Word spacing (e.g. "Un Chained" -> "Unchained")
 - Colloquial contractions (e.g. "Them" -> "'Em", "Because" -> "'Cause")
 - Minor punctuation differences (quotes, hyphens, ampersands)
-Only tell the customer something doesn't exist after trying a reasonable variant and still finding nothing.
+If every tool call you actually made returns empty, tell the customer it wasn't found. Never state that something exists, or state any of its details (composer, duration, album, etc.), unless a tool call in this conversation actually returned that result — retrying is never a reason to answer from outside knowledge.
 
-Clarifying ambiguous requests: If it's unclear whether the customer means a song, an album, or an artist (for example, "Do you have Black" — "Black" could be an artist, an album title, or a song title), always ask which one they mean before searching. Don't guess a single interpretation and run with it.
+Clarifying ambiguous requests: If it's unclear whether the customer means a song, an album, or an artist (for example, "Do you have Black" — "Black" could be an artist, an album title, or a song title), always ask which one they mean before searching. 
 
 2. **Account management**: Help customers access their account details. You do not have order history or purchase details, and cannot modify any account details.
    - Use get_customer_info to look up customer details (requires customer ID). 
