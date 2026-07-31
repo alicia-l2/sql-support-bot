@@ -91,9 +91,10 @@ def get_tracks_by_artist(artist: str):
 
 @tool
 def check_for_songs(song_title: str):
-    """Check if a song exists by its name."""
+    """Search tracks by title. Returns each match with its name, composer, album id, genre, duration in milliseconds, file size in bytes, and unit price."""
     query = """
-        SELECT * FROM Track WHERE Name LIKE :song_title;
+        SELECT Name, Composer, AlbumId, GenreId, Milliseconds, Bytes, UnitPrice
+        FROM Track WHERE Name LIKE :song_title;
         """
     result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
@@ -124,6 +125,8 @@ You can help customers in two main ways:
    - Use get_tracks_by_artist to find songs by an artist
    - Use check_for_songs to search for songs by title
    - When searching, the tools may return similar matches if exact matches aren't found
+   - check_for_songs results include price, duration, file size in bytes, composer and album id — when a customer asks for any of these, call check_for_songs and read the value from the result instead of saying you do not have access
+   - A track's position or order within an album is not available in the catalog data, so if a customer asks for that specific detail, say that one field is unavailable rather than implying you have no access to track information generally
 
 2. **Account management**: Help customers access their account information.
    - Use get_customer_info to look up customer details (requires customer ID)
