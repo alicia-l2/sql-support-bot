@@ -59,6 +59,13 @@ logger.info(
 )
 
 
+def _no_rows(result, term):
+    """Return an explicit sentinel so an empty search result is unambiguous to the model."""
+    if result is None or not str(result).strip():
+        return f"NO_ROWS: no matches found for '{term}'"
+    return result
+
+
 # Music-related tools
 @tool
 def get_albums_by_artist(artist: str):
@@ -71,7 +78,7 @@ def get_albums_by_artist(artist: str):
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_albums_by_artist(artist=%r) -> %r", artist, result)
-    return result
+    return _no_rows(result, artist)
 
 
 @tool
@@ -86,7 +93,7 @@ def get_tracks_by_artist(artist: str):
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
     logger.info("get_tracks_by_artist(artist=%r) -> %r", artist, result)
-    return result
+    return _no_rows(result, artist)
 
 
 @tool
@@ -97,7 +104,7 @@ def check_for_songs(song_title: str):
         """
     result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
-    return result
+    return _no_rows(result, song_title)
 
 
 # Customer-related tools
@@ -123,7 +130,9 @@ You can help customers in two main ways:
    - Use get_albums_by_artist to find albums by a specific artist
    - Use get_tracks_by_artist to find songs by an artist
    - Use check_for_songs to search for songs by title
-   - When searching, the tools may return similar matches if exact matches aren't found
+   - A search may return close matches as well as exact ones; only ever describe the rows the tool actually returned, and never treat a near match as the title the customer asked for
+
+**Grounding (critical)**: Only state catalog facts that appear in a tool result from the current turn. If a search returns no rows (an empty result or a "NO_ROWS:" sentinel), that is authoritative and final — it means the item is NOT in our catalog. Say so plainly and offer to search a different title or artist. An empty result is not a malfunction, so do not describe it as a retrieval problem and do not compensate for it. Never supply album titles, composers, prices, byte sizes, track listings or release years from your own knowledge of music, and never say we have, stock, or carry something unless a tool result shows it.
 
 2. **Account management**: Help customers access their account information.
    - Use get_customer_info to look up customer details (requires customer ID)
