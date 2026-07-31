@@ -11,12 +11,13 @@ Built with DeepAgents - the agent autonomously decides which tools to use.
 from dotenv import load_dotenv
 import logging
 import sqlite3
+import unicodedata
 import uuid
 import requests
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 from deepagents import create_deep_agent
 
@@ -59,6 +60,24 @@ logger.info(
 )
 
 
+def _normalize_name(value: str) -> str:
+    """Lower-case a name, strip accents, and drop every non-alphanumeric character."""
+    decomposed = unicodedata.normalize("NFKD", str(value))
+    without_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return "".join(c for c in without_accents.lower() if c.isalnum())
+
+
+def _normalized_search(query: str, column: str, term: str):
+    """Match a normalized search term against the normalized values of a column."""
+    target = _normalize_name(term)
+    if not target:
+        return ""
+    with engine.connect() as connection:
+        rows = connection.execute(text(query)).mappings().all()
+    matches = [dict(row) for row in rows if target in _normalize_name(row[column] or "")]
+    return str(matches) if matches else ""
+
+
 # Music-related tools
 @tool
 def get_albums_by_artist(artist: str):
@@ -70,6 +89,16 @@ def get_albums_by_artist(artist: str):
         WHERE Artist.Name LIKE :artist;
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    if not result:
+        result = _normalized_search(
+            """
+            SELECT Album.Title, Artist.Name
+            FROM Album
+            JOIN Artist ON Album.ArtistId = Artist.ArtistId;
+            """,
+            "Name",
+            artist,
+        )
     logger.info("get_albums_by_artist(artist=%r) -> %r", artist, result)
     return result
 
@@ -85,6 +114,17 @@ def get_tracks_by_artist(artist: str):
         WHERE Artist.Name LIKE :artist;
         """
     result = db.run(query, parameters={"artist": f"%{artist}%"}, include_columns=True)
+    if not result:
+        result = _normalized_search(
+            """
+            SELECT Track.Name as SongName, Artist.Name as ArtistName
+            FROM Album
+            LEFT JOIN Artist ON Album.ArtistId = Artist.ArtistId
+            LEFT JOIN Track ON Track.AlbumId = Album.AlbumId;
+            """,
+            "ArtistName",
+            artist,
+        )
     logger.info("get_tracks_by_artist(artist=%r) -> %r", artist, result)
     return result
 
@@ -96,6 +136,8 @@ def check_for_songs(song_title: str):
         SELECT * FROM Track WHERE Name LIKE :song_title;
         """
     result = db.run(query, parameters={"song_title": f"%{song_title}%"}, include_columns=True)
+    if not result:
+        result = _normalized_search("SELECT * FROM Track;", "Name", song_title)
     logger.info("check_for_songs(song_title=%r) -> %r", song_title, result)
     return result
 
@@ -123,7 +165,8 @@ You can help customers in two main ways:
    - Use get_albums_by_artist to find albums by a specific artist
    - Use get_tracks_by_artist to find songs by an artist
    - Use check_for_songs to search for songs by title
-   - When searching, the tools may return similar matches if exact matches aren't found
+   - Title and artist matching is literal: the tools match the characters you pass, so spacing, punctuation and accents matter and near-misses return nothing
+   - If a title or artist search returns no rows, try once more with spaces removed and accents simplified (e.g. "Un Chained" -> "Unchained", "Motorhead" -> "Motörhead") before telling the customer the item is not in our catalog
 
 2. **Account management**: Help customers access their account information.
    - Use get_customer_info to look up customer details (requires customer ID)
